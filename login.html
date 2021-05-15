@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {
+                font-family: Arial, Helvetica, sans-serif;
+                font-size: 0.7em;
+            }
+        </style>
+    </head>
+    <body>
+        <p>You have not logged in or do not have access to the requested page. The page may also not exist. Who's to say.</p>
+        <p>Please login to access: {{.Page}}</p>
+<form action="" method="POST">
+    <input name="username" type="text">
+    <input name="password" type="password">
+    <input type="submit" value="Login">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+</form>
+    </body>
+</html>
