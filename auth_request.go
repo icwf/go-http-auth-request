@@ -1,75 +1,85 @@
 package main
 
 import (
-	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 )
 
 type Ticket struct {
-	principal string
-	expiry    time.Time
+	Principal string
+	Expiry    time.Time
+}
+
+func (t *Ticket) MarshalJSON() ([]byte, error) {
+
+	return []byte(fmt.Sprintf(`{"Principal": "%s", "Expiry": %d}`, t.Principal, t.Expiry.Unix())), nil
+
+}
+
+func (t *Ticket) UnmarshalJSON(b []byte) error {
+
+	type RawTicket struct {
+		Principal string
+		Expiry    int64
+	}
+
+	rt := &RawTicket{}
+	json.Unmarshal(b, rt)
+
+	t.Principal = rt.Principal
+	t.Expiry = time.Unix(rt.Expiry, 0)
+
+	return nil
+
 }
 
 func (t Ticket) isValid() bool {
 
-	return t.principal != "" && t.expiry.After(time.Now())
+	return t.Principal != "" && t.Expiry.After(time.Now())
 
 }
 
-func (t *Ticket) parseCookieValue(s string) {
+func (t *Ticket) ValidateAndDecrypt(s string) {
 
-	split := strings.Split(s, "|")
-	if len(split) != 3 {
+	ciphertext, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
 		return
 	}
 
-	expiry := time.Time{}
-
-	principal := split[0]
-	mac, _ := hex.DecodeString(split[2])
-
-	expiryb, _ := hex.DecodeString(split[1])
-	expiry.GobDecode(expiryb)
-
-	tovalidate := Ticket{principal: principal, expiry: expiry}
-	mac_v := tovalidate.getMAC()
-
-	if hmac.Equal(mac, mac_v) {
-		t.principal = principal
-		t.expiry = expiry
-	}
-
-}
-
-func (t Ticket) getMAC() []byte {
-
-	h := hmac.New(sha256.New, ticketConfig.SecretKey)
-
-	expiry, err := t.expiry.GobEncode()
+	plaintext, err := DecryptWithMAC(ciphertext, ticketConfig.SecretKey)
 	if err != nil {
-		fmt.Println(error(err))
+		return
 	}
 
-	h.Write([]byte(t.principal))
-	h.Write(expiry)
-
-	mac := h.Sum(nil)
-	return mac
+	json.Unmarshal(plaintext, t)
 }
 
-func (t Ticket) createCookieValue() string {
+func (t *Ticket) EncryptAndSign() string {
 
-	mac := t.getMAC()
-	expiry, _ := t.expiry.GobEncode()
+	plaintext, err := json.Marshal(t)
+	if err != nil {
+		fmt.Println(err)
+	}
 
-	return fmt.Sprintf("%s|%s|%s", t.principal, hex.EncodeToString(expiry), hex.EncodeToString(mac))
+	nonce, err := Generate64BitNonce()
+	if err != nil {
+		return ""
+	}
+
+	ciphertext, err := EncryptThenMAC(plaintext, ticketConfig.SecretKey, nonce)
+	if err != nil {
+		return ""
+	}
+
+	return base64.StdEncoding.EncodeToString(ciphertext)
+
 }
 
 // Interface to hash password string
@@ -97,8 +107,8 @@ func authenticate(username string, password string) bool {
 
 func createPrincipalTicket(principal string, expiry time.Time) Ticket {
 	return Ticket{
-		principal: principal,
-		expiry:    expiry,
+		Principal: principal,
+		Expiry:    expiry,
 	}
 }
 
@@ -114,12 +124,12 @@ func authHandler(w http.ResponseWriter, r *http.Request) {
 	// Valid ticket + principal has permission to
 	// access the requested resource?
 	tkt := &Ticket{}
-	tkt.parseCookieValue(c.Value)
+	tkt.ValidateAndDecrypt(c.Value)
 
 	resource := r.Header.Get("X-Original-URI")
 
 	if tkt.isValid() {
-		allowed := ticketConfig.PrincipalIsAuthorized(tkt.principal, resource)
+		allowed := ticketConfig.PrincipalIsAuthorized(tkt.Principal, resource)
 		if allowed {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -146,14 +156,14 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 		csrf := r.FormValue("csrf_token")
 		csrfTkt := &Ticket{}
-		csrfTkt.parseCookieValue(csrf)
+		csrfTkt.ValidateAndDecrypt(csrf)
 
 		if authenticate(username, password) && csrfTkt.isValid() {
 
 			tkt := createPrincipalTicket(username, time.Now().Add(time.Hour))
 			c := &http.Cookie{
 				Name:    "ticket",
-				Value:   tkt.createCookieValue(),
+				Value:   tkt.EncryptAndSign(),
 				Expires: time.Now().Add(time.Hour * 24),
 				Path:    "/",
 			}
@@ -177,7 +187,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	csrf := createPrincipalTicket("CSRFTOKEN", time.Now().Add(time.Minute*15))
 	context := Info{Page: nsredirect.Value}
-	context.CSRF = csrf.createCookieValue()
+	context.CSRF = csrf.EncryptAndSign()
 
 	t.Execute(w, context)
 
@@ -188,6 +198,13 @@ var ticketConfig Config
 func main() {
 
 	ticketConfig.Read("config.json")
+
+	t := &Ticket{
+		Principal: "ian",
+		Expiry:    time.Now(),
+	}
+
+	t.EncryptAndSign()
 
 	http.HandleFunc("/login", loginHandler)
 	http.HandleFunc("/_auth", authHandler)
