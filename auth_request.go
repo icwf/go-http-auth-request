@@ -17,12 +17,17 @@ type Ticket struct {
 	Expiry    time.Time
 }
 
+// Custom marshaller to turn the time.Time
+// into an integer for JSON purposes
 func (t *Ticket) MarshalJSON() ([]byte, error) {
 
 	return []byte(fmt.Sprintf(`{"Principal": "%s", "Expiry": %d}`, t.Principal, t.Expiry.Unix())), nil
 
 }
 
+// Custom unmarshaller to revert the integer
+// Unix timestamp to time.Time in the ticket
+// struct
 func (t *Ticket) UnmarshalJSON(b []byte) error {
 
 	type RawTicket struct {
@@ -125,6 +130,8 @@ func authHandler(w http.ResponseWriter, r *http.Request) {
 	// access the requested resource?
 	tkt := &Ticket{}
 	tkt.ValidateAndDecrypt(c.Value)
+
+	fmt.Println(tkt.isValid())
 
 	resource := r.Header.Get("X-Original-URI")
 
