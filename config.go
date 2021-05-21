@@ -2,10 +2,13 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"time"
+
+	"golang.org/x/crypto/pbkdf2"
 )
 
 type Config struct {
@@ -57,6 +60,12 @@ func (c *Config) Read(path string) error {
 	}
 	if rawC.SecretKey != "" {
 		c.SecretKey = []byte(rawC.SecretKey)
+
+		// When a secret key is provided but isn't 16 bytes
+		// i.e. AES-128 keysize, derive a key from it via pbkdf2
+		if len(c.SecretKey) != 16 {
+			c.SecretKey = pbkdf2.Key(c.SecretKey, []byte("TOPSECRETSALT"), 4096, 16, sha256.New)
+		}
 	}
 
 	// If no expire length set in config.json,
